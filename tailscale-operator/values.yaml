@@ -1,0 +1,27 @@
+# Helm values for the Tailscale Kubernetes operator (chart tailscale-operator,
+# version pinned in README.md). Install/upgrade:
+#
+#   helm upgrade --install tailscale-operator tailscale/tailscale-operator \
+#     -n tailscale --version 1.102.4 -f tailscale-operator/values.yaml --wait
+#
+# Every value below equals the chart default. They are written out because
+# the tailnet policy (tailnet-policy.hujson) depends on them: change a tag here
+# and the policy's tagOwners and grants must change with it, or the operator
+# cannot tag its proxies and the proxies cannot reach LM Studio.
+
+# NO oauth: section, on purpose. With oauth.clientId/clientSecret unset, the
+# chart reads the pre-created Secret "operator-oauth" (keys client_id and
+# client_secret) in the tailscale namespace. Create it from the command line
+# (README.md, step 3). Never put the client secret in this file.
+
+operatorConfig:                                   # settings for the operator itself
+  # The operator's own device on the tailnet. Policy: "tag:k8s-operator": []
+  hostname: "tailscale-operator"                  # the operator's device name in the tailnet admin console
+  defaultTags:                                    # tags the operator's own device gets
+    - "tag:k8s-operator"                          # must be in the policy's tagOwners and on the OAuth client
+
+proxyConfig:                                      # settings for every proxy the operator creates
+  # Tag given to every proxy the operator creates, including the egress proxy
+  # for the lmstudio Service. Policy: "tag:k8s": ["tag:k8s-operator"], and the
+  # grant that lets tag:k8s reach LM Studio on tcp:1234.
+  defaultTags: "tag:k8s"                          # the tag every proxy gets, including the lmstudio egress proxy; the policy grants tag:k8s -> LM Studio tcp:1234

@@ -1,0 +1,75 @@
+# Manual test 4: a quick review that succeeds. Expect: exit 0, and NO
+# k3s-test-4.error.json or k3s-test-4.progress.json left over.
+#
+# Run by hand, from the K3s server:  kubectl apply -f <this file>
+# Delete before re-running:          kubectl -n ai-scan-repos delete job scan-test-4
+# Not in kustomization.yaml: a finished Job cannot be updated, so apply -k
+# would fail on it. Uses the REAL reports PVC, so its report also shows up in
+# the UI's report list (delete it there, or: kubectl exec into review-api and rm).
+apiVersion: batch/v1                              # the batch API group, where Job is defined
+kind: Job                                         # runs Pods until one finishes, then stops (unlike a Deployment)
+metadata:                                         # identity of the object
+  name: scan-test-4                               # Job name; must be unique in the namespace
+  namespace: ai-scan-repos                        # same namespace as the reports PVC and the lmstudio Service
+spec:                                             # how the Job behaves
+  ttlSecondsAfterFinished: 3600                   # delete the Job and its Pod 1 hour after it ends (time to read logs and exit code)
+  backoffLimit: 0                                 # never retry: each test must show exactly one attempt's outcome
+  activeDeadlineSeconds: 1800                     # kill it after 30 minutes no matter what (a test must not run forever)
+  template:                                       # the Pod the Job creates
+    spec:                                         # the Pod's spec
+      restartPolicy: Never                        # a failed container is not restarted in place (Jobs require Never or OnFailure)
+      automountServiceAccountToken: false         # the worker never talks to the Kubernetes API, so do not give it a token
+      enableServiceLinks: false                   # do not inject an env var for every Service in the namespace (noise, and leaks names)
+      securityContext:                            # Pod-level security settings (required by "restricted")
+        runAsNonRoot: true                        # refuse to start if the container would run as root
+        runAsUser: 10001                          # uid 10001, the user the scanner-worker image is built with
+        runAsGroup: 10001                         # gid 10001, same as the image
+        fsGroup: 10001                            # mounted volumes are group-owned by 10001 (needed on EKS/EBS; harmless on K3s)
+        seccompProfile:                           # system-call filter
+          type: RuntimeDefault                    # the container runtime's default filter ("restricted" requires one)
+      containers:                                 # the containers in the Pod
+      - name: scan-test-4                         # container name (each test has its own)
+        image: scanner-worker:0.5.0               # the worker image with contract v4; build and import it before running
+        imagePullPolicy: Never                    # only use the image imported into K3s; fail fast (ErrImageNeverPull) if it is missing
+        securityContext:                          # container-level security settings
+          allowPrivilegeEscalation: false         # a process may never gain more privileges than its parent
+          readOnlyRootFilesystem: true            # the container can only write to the volumes below
+          capabilities:                           # Linux capabilities
+            drop: [ALL]                           # drop every capability
+        resources:                                # CPU and memory
+          requests:                               # reserved for the Pod when it is scheduled
+            cpu: "500m"                           # half a core
+            memory: "1Gi"                         # 1 GiB of RAM
+          limits:                                 # the most it may use
+            cpu: "2"                              # two cores (the scanners are CPU-heavy)
+            memory: "4Gi"                         # 4 GiB (OOMKilled above this)
+        volumeMounts:                             # where volumes appear inside the container
+          - name: reports-storage                 # the shared reports PVC
+            mountPath: /reports                   # the worker writes the report, error, progress and checkpoint files here
+          - name: workspace-storage               # scratch space for the clone and the scanner caches
+            mountPath: /workspace                 # the worker's HOME and TMPDIR point here
+          - name: tmp-storage                     # a writable /tmp (the root filesystem is read-only)
+            mountPath: /tmp                       # standard temp dir
+        env:                                      # the job contract's inputs (docs/job-container-contract.md)
+          - name: REPO_URL                        # the repository to review
+            value: https://github.com/hadsahar/Secured-e-voting-system  # a public test repository
+          - name: REVIEW_ID                       # the review's id; every file on /reports is named after it
+            value: k3s-test-4                     # unique per test
+          - name: MODE                            # quick, brief or deep
+            value: quick                          # the fastest mode
+          - name: LMSTUDIO_BASE_URL               # the model endpoint
+            value: http://lmstudio:1234/v1        # the lmstudio egress Service (review-api/lmstudio-egress.yaml)
+          - name: SYSTEM_PROMPT                   # required by the contract; the worker exits 2 without it
+            value: Strict security reviewer       # a short test prompt
+          - name: LMSTUDIO_MODEL                  # pin the model, so LM Studio does not load a second one next to it (~30x slower)
+            value: google/gemma-4-26b-a4b-qat     # the model loaded in LM Studio
+      volumes:                                    # the volumes the Pod provides (mounted by name above)
+        - name: reports-storage                   # referenced by volumeMounts "reports-storage"
+          persistentVolumeClaim:                  # backed by a PVC
+            claimName: ai-scan-repos-reports      # the real reports PVC (storage/pvc-reports.yaml)
+        - name: workspace-storage                 # referenced by volumeMounts "workspace-storage"
+          emptyDir:                               # an empty folder created with the Pod and deleted with it
+            sizeLimit: 2Gi                        # clone + Trivy DB (a few hundred MB) fit; evicted above this
+        - name: tmp-storage                       # referenced by volumeMounts "tmp-storage"
+          emptyDir:                               # an empty folder created with the Pod and deleted with it
+            sizeLimit: 512Mi                      # evicted above this

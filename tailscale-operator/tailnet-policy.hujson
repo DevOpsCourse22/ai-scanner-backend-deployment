@@ -1,0 +1,66 @@
+// Tailnet policy file, as applied on 2026-09-22.
+//
+// This is a RECORD, not something kubectl applies. The live copy is in the
+// Tailscale admin console: Access controls -> JSON editor. Change it there,
+// then copy the result back into this file so the repo stays the source of
+// truth. (Rebuilt from the session that set it up; if the console differs,
+// the console wins - paste it over this file.)
+//
+// What the Kubernetes side depends on:
+//   - tagOwners for tag:k8s-operator and tag:k8s   (tailscale-operator/values.yaml)
+//   - the tag:k8s grant                             (the lmstudio egress proxy)
+{
+	// Tags, and who may apply them.
+	"tagOwners": {
+		"tag:k3s-srv":      [],
+		"tag:k8s-operator": [],                    // the operator itself
+		"tag:k8s":          ["tag:k8s-operator"],  // the proxies it creates
+	},
+
+	// Tailscale denies everything no grant allows.
+	"grants": [
+		// People: tailnet members and anyone a device was shared with keep full
+		// access (what the default "allow all" rule gave them). Tagged devices
+		// are NOT people, so they only get the grants below.
+		{"src": ["autogroup:member", "autogroup:shared"], "dst": ["*"], "ip": ["*"]},
+
+		// TEMPORARY: the K3s node itself may reach LM Studio. Only needed while a
+		// pod still uses the laptop's IP directly. Delete it once the egress
+		// proxy is verified (README.md, "Close the direct path"): after that the
+		// ONLY way from the cluster to LM Studio is through the egress proxy.
+		{"src": ["tag:k3s-srv"], "dst": ["100.93.244.39"], "ip": ["tcp:1234"]},
+
+		// Kubernetes egress proxies: LM Studio on the laptop, nothing else.
+		{"src": ["tag:k8s"], "dst": ["100.93.244.39"], "ip": ["tcp:1234"]},
+	],
+
+	// Tailscale SSH. Also needs a grant for port 22 (the members rule above).
+	"ssh": [
+		{
+			"action": "check",
+			"src":    ["autogroup:member"],
+			"dst":    ["autogroup:self"],
+			"users":  ["autogroup:nonroot", "root"],
+		},
+		{
+			"action": "accept",
+			"src":    ["autogroup:member"],
+			"dst":    ["tag:K3S-SRV"],  // tag names ignore case: same as tag:k3s-srv
+			"users":  ["elad", "root"],
+		},
+	],
+
+	"nodeAttrs": [
+		{
+			// Funnel: tailnet members may control Funnel for their own devices.
+			"target": ["autogroup:member"],
+			"attr":   ["funnel"],
+		},
+	],
+
+	// Checked on every Save: the console refuses a policy that breaks these.
+	"tests": [
+		{"src": "tag:k8s",           "accept": ["100.93.244.39:1234"], "deny": ["100.93.244.39:22", "100.111.216.122:22"]},
+		{"src": "vocvoc1@gmail.com", "accept": ["100.111.216.122:22", "100.93.244.39:1234"]},
+	],
+}

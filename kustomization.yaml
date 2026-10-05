@@ -1,0 +1,41 @@
+# The WHOLE application, applied as one unit:
+#
+#   kubectl kustomize Code-Review-MCP/k8s     print exactly what would be applied (changes nothing)
+#   kubectl apply -k Code-Review-MCP/k8s      apply it (safe to repeat: unchanged objects stay as they are)
+#
+# NOT in here, on purpose (each is once per cluster, see README.md):
+#   - The Secrets (postgres-credentials, gateway-secrets): created from the
+#     command line so no credential is ever in git (README.md, step 5).
+#   - The Tailscale operator: a Helm release (README.md, steps 3-4).
+#     review-api/lmstudio-egress.yaml only works once it runs.
+#   - job-test/: manual test Jobs. A finished Job cannot be updated, so a
+#     second "apply -k" would fail on them.
+#
+# Later: this file is what CI edits (the newTag lines) and what ArgoCD applies.
+apiVersion: kustomize.config.k8s.io/v1beta1       # the Kustomize config format version
+kind: Kustomization                               # this file describes a set of manifests to apply together
+
+resources:                                        # the files to apply (Kustomize sorts by kind: Namespace first, then the rest)
+  # the namespace and shared storage
+  - namespace.yaml                                # the ai-scan-repos namespace, Pod Security "restricted"
+  - storage/storageclass-reports.yaml             # the reports-noexec StorageClass
+  - storage/pvc-reports.yaml                      # the reports volume shared by review-api and every Job
+  # the database
+  - postgres/postgres.yaml                        # Postgres (reads the postgres-credentials Secret)
+  # the internal API and its route to the model
+  - review-api/rbac.yaml                          # review-api's ServiceAccount and permissions
+  - review-api/lmstudio-egress.yaml               # the route to LM Studio through Tailscale
+  - review-api/deployment.yaml                    # review-api Deployment and Service
+  # what the browser reaches
+  - gateway/admins-configmap.yaml                 # who may change site-wide settings (edit with kubectl, no restart)
+  - gateway/deployment.yaml                       # gateway Deployment and Service (reads the gateway-secrets Secret)
+  - frontend/deployment.yaml                      # the React UI, Deployment and Service
+  - ingress/ingress.yaml                          # Traefik routes: gateway paths to the gateway, everything else to the UI
+
+images:                                           # rewrite image references in the manifests above (NOT env vars like SCANNER_WORKER_IMAGE)
+  - name: review-api                              # every "image: review-api" ...
+    newTag: 42495f9                               # ... becomes review-api:42495f9. Set it to the tag you BUILT (README.md, step 2)
+  - name: review-gateway                          # every "image: review-gateway" ...
+    newTag: 42495f9                               # ... becomes review-gateway:42495f9. Same rule
+  - name: review-frontend                         # every "image: review-frontend" ...
+    newTag: 42495f9                               # ... becomes review-frontend:42495f9. Same rule
