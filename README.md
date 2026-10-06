@@ -1,6 +1,8 @@
 # AI-Scan-Repos on Kubernetes
 
-Every manifest for the cluster lives in this folder, and everything runs in
+Every manifest for the cluster lives in this repository and its two siblings
+(ai-scanner-gateway-deployment, ai-scanner-frontend-deployment, cloned next to
+it; `kustomization.yaml` pulls them in), and everything runs in
 **one namespace, `ai-scan-repos`**. (Until 2026-09-30 there were two folders:
 `k8s/` in `ai-scan-repos` and `K8S-Tailcale-Egress/` in `code-review`. They
 were merged here. The scanner Jobs must mount the reports PVC, and a PVC can
@@ -27,8 +29,8 @@ browser ──▶ Ingress (Traefik) ──┬─▶ frontend (React UI, everythi
 | `review-api/rbac.yaml` | ServiceAccount + Role: create/delete Jobs and Secrets, read Job status | `apply -k` |
 | `review-api/lmstudio-egress.yaml` | Service `lmstudio`, the Tailscale route to LM Studio | `apply -k` |
 | `review-api/deployment.yaml` | review-api Deployment + Service, kubernetes mode | `apply -k` |
-| `gateway/deployment.yaml` | gateway Deployment + Service. **The public address is set here** (3 env vars) | `apply -k` |
-| `frontend/deployment.yaml` | the React UI (nginx, uid 101) Deployment + Service | `apply -k` |
+| `../ai-scanner-gateway-deployment/` | gateway admins ConfigMap, Deployment + Service. **The public address is set here** (3 env vars) | `apply -k` |
+| `../ai-scanner-frontend-deployment/` | the React UI (nginx, uid 101) Deployment + Service | `apply -k` |
 | `ingress/ingress.yaml` | Traefik routes: the gateway's paths to the gateway, everything else to the UI | `apply -k` |
 | `tailscale-operator/values.yaml` | Helm values for the Tailscale operator | `helm` (step 4) |
 | `tailscale-operator/tailnet-policy.hujson` | the tailnet policy, as a record | the Tailscale admin console |
@@ -38,9 +40,9 @@ Every line of every manifest has a comment that says what the value means.
 
 **New here? Follow [`DEPLOY-K3S.md`](DEPLOY-K3S.md)**: the complete step-by-step deploy guide, from an empty server to the app in a browser.
 
-Background: [`docs/21`](../../docs/21-kubernetes-manifests-guide.md) (writing
-the manifests), [`docs/20` §6](../../docs/20-phase-3-plan.md) (Tailscale inside
-Kubernetes), [`docs/job-container-contract.md`](../../docs/job-container-contract.md)
+Background: [`docs/21`](https://github.com/hadsahar/DevSecOps-Final-Project/blob/main/docs/21-kubernetes-manifests-guide.md) (writing
+the manifests), [`docs/20` §6](https://github.com/hadsahar/DevSecOps-Final-Project/blob/main/docs/20-phase-3-plan.md) (Tailscale inside
+Kubernetes), [`docs/job-container-contract.md`](https://github.com/hadsahar/DevSecOps-Final-Project/blob/main/docs/job-container-contract.md)
 (what a Job gets and returns).
 
 ---
@@ -70,30 +72,37 @@ Kubernetes), [`docs/job-container-contract.md`](../../docs/job-container-contrac
 
 ## Deploy / redeploy
 
-Run everything **on the K3s server, in bash, from this folder**
-(`Code-Review-MCP/k8s`). Steps 3 and 4 are once per cluster; the rest is safe
+Run everything **on the K3s server, in bash**, from the folder that holds the
+six repositories side by side (`~/Desktop/Final-Project-Repos`; cloning them:
+DEPLOY-K3S.md, A3). Steps 3 and 4 are once per cluster; the rest is safe
 to repeat.
 
 **1. Get the code**
 
 ```
-git pull
+for r in ai-scanner-*; do git -C "$r" pull --ff-only; done
 ```
 
 **2. Build the images and hand them to K3s**
 
 ```
-TAG=$(git rev-parse --short HEAD)
-bash ../backend/build.sh --tag "$TAG"
-docker build -t "review-gateway:$TAG" ../gateway
-docker build -t "review-frontend:$TAG" ../frontend-react
-bash ../scanner-worker/build.sh --tag 0.5.0
-docker save "review-api:$TAG" "review-gateway:$TAG" "review-frontend:$TAG" scanner-worker:0.5.0 | sudo k3s ctr images import -
-sed -i "s/^    newTag: [^ ]*/    newTag: $TAG/" kustomization.yaml
+API_TAG=$(git -C ai-scanner-backend rev-parse --short HEAD)
+GW_TAG=$(git -C ai-scanner-gateway rev-parse --short HEAD)
+FE_TAG=$(git -C ai-scanner-frontend rev-parse --short HEAD)
+bash ai-scanner-backend/build.sh --tag "$API_TAG"
+docker build -t "review-gateway:$GW_TAG" ai-scanner-gateway
+docker build -t "review-frontend:$FE_TAG" ai-scanner-frontend
+bash ai-scanner-backend/scanner-worker/build.sh --tag 0.5.0
+docker save "review-api:$API_TAG" "review-gateway:$GW_TAG" "review-frontend:$FE_TAG" scanner-worker:0.5.0 | sudo k3s ctr images import -
+cd ai-scanner-backend-deployment
+sed -i "/name: review-api /{n;s/newTag: [^ ]*/newTag: $API_TAG/}" kustomization.yaml
+sed -i "/name: review-gateway /{n;s/newTag: [^ ]*/newTag: $GW_TAG/}" kustomization.yaml
+sed -i "/name: review-frontend /{n;s/newTag: [^ ]*/newTag: $FE_TAG/}" kustomization.yaml
 ```
 
-Docker and K3s keep separate image stores, hence the import. The `sed` line
-points the three `newTag` lines at the tag you just built; commit that
+Docker and K3s keep separate image stores, hence the import. The `sed` lines
+point each `newTag` line at the commit of the repository that image was built
+from; commit that
 change. The scanner-worker tag is fixed (`0.5.0`) because review-api reads it
 from the `SCANNER_WORKER_IMAGE` env var, which Kustomize does not rewrite.
 Bump it in `review-api/deployment.yaml` and in `job-test/` when you build a
@@ -139,7 +148,7 @@ unset PG_PW
 Then the GitHub OAuth App (GitHub → Settings → Developer settings → OAuth
 Apps → New): **Homepage URL** `http://100.111.216.122`, **Authorization
 callback URL** `http://100.111.216.122/auth/github/callback`. Both must match
-the public address in `gateway/deployment.yaml`. Then `gateway-secrets`, the
+the public address in `ai-scanner-gateway-deployment/deployment.yaml`. Then `gateway-secrets`, the
 same way (you type each value, nothing is echoed):
 
 ```
@@ -161,7 +170,7 @@ crash. If the password contains `@`, `:` or `/`, pick another one (or
 URL-encode it), or the URL breaks. The webhook secret is random because
 webhooks cannot reach a tailnet address anyway. `settings-key` encrypts the
 AI service API key an admin saves in Settings; admins themselves are listed in
-the ConfigMap `gateway-admins` (`gateway/admins-configmap.yaml`, change it
+the ConfigMap `gateway-admins` (`admins-configmap.yaml` in ai-scanner-gateway-deployment, change it
 with `kubectl -n ai-scan-repos edit configmap gateway-admins`, no restart
 needed). Details: DEPLOY-K3S.md, "AI model and admins".
 
@@ -225,7 +234,7 @@ everything in it (including the old test PVC `pvctest` and its reports).
 The app answers on any address that reaches Traefik, but the login flow needs
 ONE address in three places, which must agree exactly:
 `GATEWAY_FRONTEND_URL`, `GATEWAY_CORS_ORIGINS` and `GITHUB_OAUTH_REDIRECT_URI`
-in `gateway/deployment.yaml`, and the OAuth App's callback URL on GitHub.
+in `ai-scanner-gateway-deployment/deployment.yaml`, and the OAuth App's callback URL on GitHub.
 Default: `http://100.111.216.122` (tailnet only). With HTTPS, also set
 `GATEWAY_COOKIE_SECURE` to `"true"` and add `tls:` to the Ingress.
 

@@ -32,8 +32,23 @@ What runs where:
 | **Tailscale admin console** | the tailnet policy and the operator's OAuth client |
 
 Everything the cluster runs lives in **one namespace: `ai-scan-repos`**.
-All the Kubernetes files are in `Code-Review-MCP/k8s/`, and **one command
-(`kubectl apply -k`) applies them all**.
+The code and the Kubernetes files are split over six repositories in the
+DevOpsCourse22 organization, all cloned side by side into **one folder**
+(this guide uses `~/Desktop/Final-Project-Repos` on the server):
+
+| Repository | What it holds |
+|---|---|
+| `ai-scanner-backend` | review-api, the review engine (`mcp-server/`), the scanners (`scanner/`) and the Job image (`scanner-worker/`) |
+| `ai-scanner-gateway` | the gateway (login, sessions, settings) |
+| `ai-scanner-frontend` | the React website |
+| `ai-scanner-backend-deployment` | **this repository**: namespace, storage, Postgres, review-api, Ingress, Tailscale, test Jobs, the kustomization and this guide |
+| `ai-scanner-gateway-deployment` | the gateway's manifests (Deployment, admins ConfigMap) |
+| `ai-scanner-frontend-deployment` | the website's manifest |
+
+**One command (`kubectl apply -k .`, run in this repository) applies them
+all**: its `kustomization.yaml` pulls in `../ai-scanner-gateway-deployment`
+and `../ai-scanner-frontend-deployment`, which is why the folders must sit
+next to each other.
 
 ### How to read the commands
 
@@ -67,7 +82,7 @@ tailscale ip -4        # must print 100.111.216.122: the address this guide uses
 ```
 
 If `tailscale ip -4` prints a different address, use yours wherever this
-guide says `100.111.216.122`, and change it in `gateway/deployment.yaml`
+guide says `100.111.216.122`, and change it in `ai-scanner-gateway-deployment/deployment.yaml`
 (see "Changing the public address" at the end).
 
 Each should print a version. Install only what is missing:
@@ -102,16 +117,22 @@ kubectl get nodes
 🖥️ K3s server (bash):
 
 ```bash
-cd ~/Desktop
-git clone https://github.com/hadsahar/DevSecOps-Final-Project.git   # skip if the folder exists
-cd DevSecOps-Final-Project
-git checkout main
-git pull
+mkdir -p ~/Desktop/Final-Project-Repos && cd ~/Desktop/Final-Project-Repos
+for r in ai-scanner-backend ai-scanner-gateway ai-scanner-frontend \
+         ai-scanner-backend-deployment ai-scanner-gateway-deployment ai-scanner-frontend-deployment; do
+  [ -d "$r" ] || git clone "https://github.com/DevOpsCourse22/$r.git"   # skip the ones already there
+  git -C "$r" pull --ff-only
+done
 ```
 
-✅ Worked if `ls Code-Review-MCP/k8s` lists `kustomization.yaml`, `README.md`,
-`DEPLOY-K3S.md` and the folders `review-api`, `gateway`, `frontend`, `ingress`,
-`postgres`, `storage`, `tailscale-operator`, `job-test`.
+The repositories are private, so `git clone` asks for a GitHub username and a
+**personal access token** (GitHub no longer accepts your account password for
+git). Type it at the prompt; never put it in a file or on the command line.
+
+✅ Worked if `ls` shows the six folders, and
+`ls ai-scanner-backend-deployment` lists `kustomization.yaml`, `README.md`,
+`DEPLOY-K3S.md` and the folders `review-api`, `ingress`, `postgres`,
+`storage`, `tailscale-operator`, `job-test`.
 
 ### A4. LM Studio on the laptop
 
@@ -137,7 +158,7 @@ netstat -ano | findstr :1234
 🌐 Browser, https://login.tailscale.com/admin:
 
 1. **Access controls → JSON editor**: paste the policy from
-   `Code-Review-MCP/k8s/tailscale-operator/tailnet-policy.hujson` and save.
+   `ai-scanner-backend-deployment/tailscale-operator/tailnet-policy.hujson` and save.
    It lets the operator tag its devices and lets `tag:k8s` reach LM Studio on
    tcp:1234.
 2. **Settings → Trust credentials → Generate OAuth client**: give it `write` on
@@ -165,7 +186,7 @@ unset TS_ID TS_SECRET
 Then the operator itself, with a pinned version:
 
 ```bash
-cd ~/Desktop/DevSecOps-Final-Project/Code-Review-MCP/k8s
+cd ~/Desktop/Final-Project-Repos/ai-scanner-backend-deployment
 helm repo add tailscale https://pkgs.tailscale.com/helmcharts
 helm repo update
 helm upgrade --install tailscale-operator tailscale/tailscale-operator \
@@ -190,17 +211,18 @@ Keep the **Client ID** and the **client secret** for step B4. GitHub shows
 the secret only once; save it in a password manager.
 
 > ⚠️ The callback URL must match `GITHUB_OAUTH_REDIRECT_URI` in
-> `k8s/gateway/deployment.yaml` **exactly**: `http`, not `https`, and no
+> `ai-scanner-gateway-deployment/deployment.yaml` **exactly**: `http`, not `https`, and no
 > trailing slash.
 
 ---
 
 ## Part B: Deploy (the first time)
 
-All of Part B: 🖥️ **K3s server (bash)**, from the k8s folder:
+All of Part B: 🖥️ **K3s server (bash)**, starting in the folder that holds
+the six repositories:
 
 ```bash
-cd ~/Desktop/DevSecOps-Final-Project/Code-Review-MCP/k8s
+cd ~/Desktop/Final-Project-Repos
 ```
 
 ### B1. Build the four images
@@ -208,14 +230,19 @@ cd ~/Desktop/DevSecOps-Final-Project/Code-Review-MCP/k8s
 K3s can only run images that are in **its own** image store on this server
 (there is no registry). So you build here, then hand the images to K3s.
 
-```bash
-TAG=$(git rev-parse --short HEAD)
-echo "Building tag: $TAG"
+Each image is tagged with the short commit of the repository it is built
+from, so the three tags usually differ:
 
-bash ../backend/build.sh --tag "$TAG"                    # review-api (slow: installs the scanners)
-docker build -t "review-gateway:$TAG" ../gateway          # gateway
-docker build -t "review-frontend:$TAG" ../frontend-react  # React UI
-bash ../scanner-worker/build.sh --tag 0.5.0               # the Job image (slow)
+```bash
+API_TAG=$(git -C ai-scanner-backend rev-parse --short HEAD)
+GW_TAG=$(git -C ai-scanner-gateway rev-parse --short HEAD)
+FE_TAG=$(git -C ai-scanner-frontend rev-parse --short HEAD)
+echo "Building review-api:$API_TAG review-gateway:$GW_TAG review-frontend:$FE_TAG"
+
+bash ai-scanner-backend/build.sh --tag "$API_TAG"               # review-api (slow: installs the scanners)
+docker build -t "review-gateway:$GW_TAG" ai-scanner-gateway      # gateway
+docker build -t "review-frontend:$FE_TAG" ai-scanner-frontend    # React UI
+bash ai-scanner-backend/scanner-worker/build.sh --tag 0.5.0      # the Job image (slow)
 ```
 
 ✅ Worked if this lists 4 images:
@@ -224,11 +251,11 @@ bash ../scanner-worker/build.sh --tag 0.5.0               # the Job image (slow)
 docker images | grep -E 'review-|scanner-worker'
 ```
 
-`review-api`, `review-gateway` and `review-frontend` tagged with `$TAG`, and
+`review-api`, `review-gateway` and `review-frontend` tagged with their tags, and
 `scanner-worker` tagged `0.5.0`.
 
 > Why is scanner-worker always `0.5.0`? review-api reads that name from the
-> env var `SCANNER_WORKER_IMAGE` in `review-api/deployment.yaml`. Kustomize
+> env var `SCANNER_WORKER_IMAGE` in `ai-scanner-backend-deployment/review-api/deployment.yaml`. Kustomize
 > does not rewrite env vars. When you change the worker's code, build a new
 > number (`0.4.1`, ...) and change it in `review-api/deployment.yaml` and in
 > `job-test/*.yaml`.
@@ -239,7 +266,7 @@ Docker and K3s keep **separate** image stores. This copies them over (type
 your sudo password):
 
 ```bash
-docker save "review-api:$TAG" "review-gateway:$TAG" "review-frontend:$TAG" scanner-worker:0.5.0 \
+docker save "review-api:$API_TAG" "review-gateway:$GW_TAG" "review-frontend:$FE_TAG" scanner-worker:0.5.0 \
   | sudo k3s ctr images import -
 ```
 
@@ -252,12 +279,17 @@ sudo k3s ctr images ls -q | grep -E 'review-|scanner-worker'
 
 ### B3. Point the manifests at the tag you built
 
+From here on, work in this repository:
+
 ```bash
-sed -i "s/^    newTag: [^ ]*/    newTag: $TAG/" kustomization.yaml
-grep newTag kustomization.yaml
+cd ~/Desktop/Final-Project-Repos/ai-scanner-backend-deployment
+sed -i "/name: review-api /{n;s/newTag: [^ ]*/newTag: $API_TAG/}" kustomization.yaml
+sed -i "/name: review-gateway /{n;s/newTag: [^ ]*/newTag: $GW_TAG/}" kustomization.yaml
+sed -i "/name: review-frontend /{n;s/newTag: [^ ]*/newTag: $FE_TAG/}" kustomization.yaml
+grep -A1 "name: review-" kustomization.yaml
 ```
 
-✅ All three `newTag:` lines show your `$TAG`.
+✅ Each `newTag:` line shows the tag of its own image.
 
 > This edits a file on the server. Make the same change on your laptop and
 > commit it there (`chore(k8s): point image tags at <tag>`). Before your next
@@ -393,31 +425,29 @@ kubectl -n ai-scan-repos get jobs -w
 🖥️ K3s server (bash):
 
 ```bash
-cd ~/Desktop/DevSecOps-Final-Project/Code-Review-MCP/k8s
-git checkout kustomization.yaml     # drop the local tag edit from last time
-git pull
-TAG=$(git rev-parse --short HEAD)
+cd ~/Desktop/Final-Project-Repos
+git -C ai-scanner-backend-deployment checkout kustomization.yaml   # drop the local tag edit from last time
+for r in ai-scanner-*; do git -C "$r" pull --ff-only; done
 ```
 
-Then rebuild **only what changed**, import it, and point the tag at it:
+Then rebuild **only the repository that changed**, import that image, and
+point its tag at it (one row per image; the others keep their tags):
 
-| You changed | Rebuild |
+| You changed | Rebuild and import |
 |---|---|
-| `backend/`, `mcp-server/` or `scanner/` | `bash ../backend/build.sh --tag "$TAG"` |
-| `gateway/` | `docker build -t "review-gateway:$TAG" ../gateway` |
-| `frontend-react/` | `docker build -t "review-frontend:$TAG" ../frontend-react` |
-| `scanner-worker/`, `mcp-server/` or `scanner/` | new number, e.g. `bash ../scanner-worker/build.sh --tag 0.5.1`, and update `SCANNER_WORKER_IMAGE` |
-| only YAML in `k8s/` | nothing to build: go straight to `kubectl apply -k .` |
+| `ai-scanner-backend` (review-api, `mcp-server/` or `scanner/`) | `API_TAG=$(git -C ai-scanner-backend rev-parse --short HEAD)`, `bash ai-scanner-backend/build.sh --tag "$API_TAG"`, `docker save "review-api:$API_TAG" \| sudo k3s ctr images import -` |
+| `ai-scanner-backend/scanner-worker/`, `mcp-server/` or `scanner/` | a new number, e.g. `bash ai-scanner-backend/scanner-worker/build.sh --tag 0.5.1`, import it, and update `SCANNER_WORKER_IMAGE` in `review-api/deployment.yaml` |
+| `ai-scanner-gateway` | `GW_TAG=$(git -C ai-scanner-gateway rev-parse --short HEAD)`, `docker build -t "review-gateway:$GW_TAG" ai-scanner-gateway`, `docker save "review-gateway:$GW_TAG" \| sudo k3s ctr images import -` |
+| `ai-scanner-frontend` | `FE_TAG=$(git -C ai-scanner-frontend rev-parse --short HEAD)`, `docker build -t "review-frontend:$FE_TAG" ai-scanner-frontend`, `docker save "review-frontend:$FE_TAG" \| sudo k3s ctr images import -` |
+| only YAML in a `*-deployment` repository | nothing to build: go straight to `kubectl apply -k .` |
 
-Every image in `kustomization.yaml` must exist with the tag you set there. If
-you rebuilt only one image, the simplest thing is to tag the others with the
-new tag too, for example:
-`docker tag review-gateway:<old> review-gateway:$TAG`.
+Then set the tag of each image you rebuilt (the matching `sed` line from B3)
+and apply:
 
 ```bash
-docker save "review-api:$TAG" "review-gateway:$TAG" "review-frontend:$TAG" | sudo k3s ctr images import -
-sed -i "s/^    newTag: [^ ]*/    newTag: $TAG/" kustomization.yaml
-kubectl apply -k .
+cd ai-scanner-backend-deployment
+sed -i "/name: review-api /{n;s/newTag: [^ ]*/newTag: $API_TAG/}" kustomization.yaml   # only if you rebuilt review-api
+kubectl kustomize . >/dev/null && kubectl apply -k .
 kubectl -n ai-scan-repos get pods -w
 ```
 
@@ -495,7 +525,7 @@ To deploy again: Part B, from B4 (the images are still in K3s).
 
 | File | What it creates |
 |---|---|
-| `kustomization.yaml` | the list of all files below, and the image tags. `kubectl apply -k .` reads it |
+| `kustomization.yaml` | the list of all files below (including the two sibling repositories), and the image tags. `kubectl apply -k .` reads it |
 | `namespace.yaml` | namespace `ai-scan-repos`, with Pod Security `restricted` |
 | `storage/storageclass-reports.yaml` | StorageClass `reports-noexec` |
 | `storage/pvc-reports.yaml` | the reports volume, shared by review-api and every Job |
@@ -503,9 +533,9 @@ To deploy again: Part B, from B4 (the images are still in K3s).
 | `review-api/rbac.yaml` | review-api's identity and permissions (create/delete Jobs and Secrets, read Job status) |
 | `review-api/lmstudio-egress.yaml` | Service `lmstudio`: the Tailscale route to LM Studio |
 | `review-api/deployment.yaml` | review-api (internal API; creates the Jobs) |
-| `gateway/admins-configmap.yaml` | ConfigMap `gateway-admins`: the GitHub usernames allowed to change the AI model in Settings |
-| `gateway/deployment.yaml` | the gateway (login, sessions, forwards to review-api). **The public address is set here** |
-| `frontend/deployment.yaml` | the React UI (nginx) |
+| `../ai-scanner-gateway-deployment/admins-configmap.yaml` | ConfigMap `gateway-admins`: the GitHub usernames allowed to change the AI model in Settings |
+| `../ai-scanner-gateway-deployment/deployment.yaml` | the gateway (login, sessions, forwards to review-api). **The public address is set here** |
+| `../ai-scanner-frontend-deployment/deployment.yaml` | the React UI (nginx) |
 | `ingress/ingress.yaml` | the Traefik routes from the browser to the gateway and the UI |
 | `tailscale-operator/` | Helm values and the tailnet policy (used in A5 and A6, not by `apply -k`) |
 | `job-test/` | 4 manual scanner-worker Jobs for testing (`kubectl apply -f`, not in `apply -k`) |
@@ -522,7 +552,7 @@ defaults (`LLM_PROVIDER`, `LMSTUDIO_BASE_URL`, `LMSTUDIO_MODEL` in
 `review-api/deployment.yaml`).
 
 **Who is an admin** is the ConfigMap `gateway-admins`
-(`gateway/admins-configmap.yaml`), one GitHub username per line. The gateway
+(`admins-configmap.yaml` in ai-scanner-gateway-deployment), one GitHub username per line. The gateway
 re-reads it by itself, so no restart is needed.
 
 🖥️ K3s server (bash):
@@ -536,7 +566,7 @@ in front of the command to use nano). Add or remove names under `admins: |`,
 indented like the existing one, save and quit.
 ✅ `configmap/gateway-admins edited`. Within about a minute, the new admin
 reloads Settings and sees the AI model form instead of the read-only line.
-To keep the change in git too, edit `gateway/admins-configmap.yaml` the same
+To keep the change in git too, edit that `admins-configmap.yaml` the same
 way (a later `kubectl apply -k .` puts the file's list back).
 
 **Where API keys are stored.** The key typed in Settings is saved in Postgres,
@@ -565,9 +595,9 @@ environment as written in its spec, and is deleted with the review.
 The app answers on any address that reaches Traefik, but the login needs one
 fixed address in **four** places that must match exactly:
 
-1. `GATEWAY_FRONTEND_URL` in `gateway/deployment.yaml`
-2. `GATEWAY_CORS_ORIGINS` in `gateway/deployment.yaml`
-3. `GITHUB_OAUTH_REDIRECT_URI` in `gateway/deployment.yaml` (+ `/auth/github/callback`)
+1. `GATEWAY_FRONTEND_URL` in `ai-scanner-gateway-deployment/deployment.yaml`
+2. `GATEWAY_CORS_ORIGINS` in `ai-scanner-gateway-deployment/deployment.yaml`
+3. `GITHUB_OAUTH_REDIRECT_URI` in `ai-scanner-gateway-deployment/deployment.yaml` (+ `/auth/github/callback`)
 4. the OAuth App's callback URL on GitHub (A7)
 
 With HTTPS, also set `GATEWAY_COOKIE_SECURE` to `"true"` and add `tls:` to the
