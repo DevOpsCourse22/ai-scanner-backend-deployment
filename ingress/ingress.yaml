@@ -38,8 +38,8 @@ spec:                                             # the routing rules
                 name: gateway                     # the gateway Service
                 port:                             # on which Service port
                   number: 8080                    # the gateway's port
-          - path: /providers                      # the list of AI providers and models for the review form
-            pathType: Exact                       # exactly /providers
+          - path: /providers                      # AI providers and models, and the site-wide AI model setting (/providers/ai, /providers/ai/presets, /providers/ai/test)
+            pathType: Prefix                      # /providers and everything under /providers/ (Exact sent /providers/ai to the UI, which answered with index.html)
             backend:                              # where matching requests go
               service:                            # to a Service
                 name: gateway                     # the gateway Service
