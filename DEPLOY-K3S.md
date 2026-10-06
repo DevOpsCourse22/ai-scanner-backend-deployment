@@ -45,10 +45,13 @@ DevOpsCourse22 organization, all cloned side by side into **one folder**
 | `ai-scanner-gateway-deployment` | the gateway's manifests (Deployment, admins ConfigMap) |
 | `ai-scanner-frontend-deployment` | the website's manifest |
 
-**One command (`kubectl apply -k .`, run in this repository) applies them
-all**: its `kustomization.yaml` pulls in `../ai-scanner-gateway-deployment`
-and `../ai-scanner-frontend-deployment`, which is why the folders must sit
-next to each other.
+Each `*-deployment` repository is **complete on its own** (its own
+`kustomization.yaml` and its own image tag), because Argo CD deploys one
+repository per Application: `ai-scan-backend`, `ai-scan-gateway` and
+`ai-scan-frontend`. Without Argo CD, apply the three by hand with
+`kubectl apply -k <repo>`, **backend first** (it creates the namespace).
+Once Argo CD manages them, change the cluster only by committing to these
+repositories.
 
 ### How to read the commands
 
@@ -279,17 +282,16 @@ sudo k3s ctr images ls -q | grep -E 'review-|scanner-worker'
 
 ### B3. Point the manifests at the tag you built
 
-From here on, work in this repository:
+Each deployment repository sets the tag of its own image:
 
 ```bash
-cd ~/Desktop/Final-Project-Repos/ai-scanner-backend-deployment
-sed -i "/name: review-api /{n;s/newTag: [^ ]*/newTag: $API_TAG/}" kustomization.yaml
-sed -i "/name: review-gateway /{n;s/newTag: [^ ]*/newTag: $GW_TAG/}" kustomization.yaml
-sed -i "/name: review-frontend /{n;s/newTag: [^ ]*/newTag: $FE_TAG/}" kustomization.yaml
-grep -A1 "name: review-" kustomization.yaml
+sed -i "s/^    newTag: [^ ]*/    newTag: $API_TAG/" ai-scanner-backend-deployment/kustomization.yaml
+sed -i "s/^    newTag: [^ ]*/    newTag: $GW_TAG/"  ai-scanner-gateway-deployment/kustomization.yaml
+sed -i "s/^    newTag: [^ ]*/    newTag: $FE_TAG/"  ai-scanner-frontend-deployment/kustomization.yaml
+grep -H newTag ai-scanner-*-deployment/kustomization.yaml
 ```
 
-✅ Each `newTag:` line shows the tag of its own image.
+✅ Each file shows the tag of its own image.
 
 > This edits a file on the server. Make the same change on your laptop and
 > commit it there (`chore(k8s): point image tags at <tag>`). Before your next
@@ -357,9 +359,15 @@ Secret (`kubectl -n ai-scan-repos delete secret <name>`) and create it again.
 ### B5. Apply everything
 
 ```bash
-kubectl kustomize . | less     # optional: read what will be applied (q to quit)
-kubectl apply -k .
+cd ~/Desktop/Final-Project-Repos
+kubectl kustomize ai-scanner-backend-deployment | less     # optional: read what will be applied (q to quit)
+kubectl apply -k ai-scanner-backend-deployment             # first: it creates the namespace
+kubectl apply -k ai-scanner-gateway-deployment
+kubectl apply -k ai-scanner-frontend-deployment
 ```
+
+With Argo CD (step 2 of PLATFORM-TOOLS-GUIDE.md), the three Applications
+do this instead; press Sync on `ai-scan-backend` first.
 
 ✅ One line per object: `namespace/…`, `storageclass/…`, `service/…`,
 `deployment.apps/…`, `statefulset.apps/…`, `ingress/…`, each `created`,
@@ -426,7 +434,7 @@ kubectl -n ai-scan-repos get jobs -w
 
 ```bash
 cd ~/Desktop/Final-Project-Repos
-git -C ai-scanner-backend-deployment checkout kustomization.yaml   # drop the local tag edit from last time
+for r in ai-scanner-*-deployment; do git -C "$r" checkout kustomization.yaml; done   # drop local tag edits from last time
 for r in ai-scanner-*; do git -C "$r" pull --ff-only; done
 ```
 
@@ -439,17 +447,20 @@ point its tag at it (one row per image; the others keep their tags):
 | `ai-scanner-backend/scanner-worker/`, `mcp-server/` or `scanner/` | a new number, e.g. `bash ai-scanner-backend/scanner-worker/build.sh --tag 0.5.1`, import it, and update `SCANNER_WORKER_IMAGE` in `review-api/deployment.yaml` |
 | `ai-scanner-gateway` | `GW_TAG=$(git -C ai-scanner-gateway rev-parse --short HEAD)`, `docker build -t "review-gateway:$GW_TAG" ai-scanner-gateway`, `docker save "review-gateway:$GW_TAG" \| sudo k3s ctr images import -` |
 | `ai-scanner-frontend` | `FE_TAG=$(git -C ai-scanner-frontend rev-parse --short HEAD)`, `docker build -t "review-frontend:$FE_TAG" ai-scanner-frontend`, `docker save "review-frontend:$FE_TAG" \| sudo k3s ctr images import -` |
-| only YAML in a `*-deployment` repository | nothing to build: go straight to `kubectl apply -k .` |
+| only YAML in a `*-deployment` repository | nothing to build: go straight to applying that repository |
 
-Then set the tag of each image you rebuilt (the matching `sed` line from B3)
-and apply:
+Then set the tag in the deployment repository of each image you rebuilt
+(the matching `sed` line from B3) and apply that repository, for example for
+review-api:
 
 ```bash
-cd ai-scanner-backend-deployment
-sed -i "/name: review-api /{n;s/newTag: [^ ]*/newTag: $API_TAG/}" kustomization.yaml   # only if you rebuilt review-api
-kubectl kustomize . >/dev/null && kubectl apply -k .
+sed -i "s/^    newTag: [^ ]*/    newTag: $API_TAG/" ai-scanner-backend-deployment/kustomization.yaml
+kubectl kustomize ai-scanner-backend-deployment >/dev/null && kubectl apply -k ai-scanner-backend-deployment
 kubectl -n ai-scan-repos get pods -w
 ```
+
+With Argo CD: commit and push the `newTag` change instead, and Argo CD
+applies it.
 
 A new tag makes Kubernetes roll each Deployment to new Pods by itself.
 
@@ -525,7 +536,7 @@ To deploy again: Part B, from B4 (the images are still in K3s).
 
 | File | What it creates |
 |---|---|
-| `kustomization.yaml` | the list of all files below (including the two sibling repositories), and the image tags. `kubectl apply -k .` reads it |
+| `kustomization.yaml` | the list of this repository's files below, and the review-api image tag. `kubectl apply -k .` (or Argo CD) reads it |
 | `namespace.yaml` | namespace `ai-scan-repos`, with Pod Security `restricted` |
 | `storage/storageclass-reports.yaml` | StorageClass `reports-noexec` |
 | `storage/pvc-reports.yaml` | the reports volume, shared by review-api and every Job |
@@ -533,9 +544,9 @@ To deploy again: Part B, from B4 (the images are still in K3s).
 | `review-api/rbac.yaml` | review-api's identity and permissions (create/delete Jobs and Secrets, read Job status) |
 | `review-api/lmstudio-egress.yaml` | Service `lmstudio`: the Tailscale route to LM Studio |
 | `review-api/deployment.yaml` | review-api (internal API; creates the Jobs) |
-| `../ai-scanner-gateway-deployment/admins-configmap.yaml` | ConfigMap `gateway-admins`: the GitHub usernames allowed to change the AI model in Settings |
-| `../ai-scanner-gateway-deployment/deployment.yaml` | the gateway (login, sessions, forwards to review-api). **The public address is set here** |
-| `../ai-scanner-frontend-deployment/deployment.yaml` | the React UI (nginx) |
+| ai-scanner-gateway-deployment: `admins-configmap.yaml` | ConfigMap `gateway-admins`: the GitHub usernames allowed to change the AI model in Settings |
+| ai-scanner-gateway-deployment: `deployment.yaml` (+ its own `kustomization.yaml` with the review-gateway tag) | the gateway (login, sessions, forwards to review-api). **The public address is set here** |
+| ai-scanner-frontend-deployment: `deployment.yaml` (+ its own `kustomization.yaml` with the review-frontend tag) | the React UI (nginx) |
 | `ingress/ingress.yaml` | the Traefik routes from the browser to the gateway and the UI |
 | `tailscale-operator/` | Helm values and the tailnet policy (used in A5 and A6, not by `apply -k`) |
 | `job-test/` | 4 manual scanner-worker Jobs for testing (`kubectl apply -f`, not in `apply -k`) |
@@ -567,7 +578,7 @@ indented like the existing one, save and quit.
 ✅ `configmap/gateway-admins edited`. Within about a minute, the new admin
 reloads Settings and sees the AI model form instead of the read-only line.
 To keep the change in git too, edit that `admins-configmap.yaml` the same
-way (a later `kubectl apply -k .` puts the file's list back).
+way (a later apply or Argo CD sync of ai-scanner-gateway-deployment puts the file's list back).
 
 **Where API keys are stored.** The key typed in Settings is saved in Postgres,
 encrypted with `settings-key` from the Secret `gateway-secrets`. The page

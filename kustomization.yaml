@@ -1,26 +1,26 @@
-# The WHOLE application, applied as one unit, from the root of this repository:
+# The shared base of the app and review-api, as one Kustomize unit, complete
+# on its own:
 #
 #   kubectl kustomize .     print exactly what would be applied (changes nothing)
-#   kubectl apply -k .      apply it (safe to repeat: unchanged objects stay as they are)
 #
-# The gateway and the UI manifests live in their own repositories, which
-# must be cloned NEXT TO this one (same parent folder), because they are
-# listed below as ../ai-scanner-gateway-deployment and
-# ../ai-scanner-frontend-deployment:
+# Deployed by the Argo CD Application "ai-scan-backend", which points at this
+# repository (path ".", branch main). Argo CD clones ONE repository per
+# Application, so nothing here may refer to another repository (no ../).
+# The gateway and the UI are their own Applications, from
+# ai-scanner-gateway-deployment and ai-scanner-frontend-deployment.
+# Change the cluster by committing here; Argo CD applies the commit.
 #
-#   <folder>/ai-scanner-backend-deployment     <- run kubectl here
-#   <folder>/ai-scanner-gateway-deployment
-#   <folder>/ai-scanner-frontend-deployment
+# This Application owns the namespace, so it is created first.
 #
-# NOT in here, on purpose (each is once per cluster, see README.md):
+# NOT in here, on purpose (each is once per cluster, see DEPLOY-K3S.md):
 #   - The Secrets (postgres-credentials, gateway-secrets): created from the
-#     command line so no credential is ever in git (README.md, step 5).
-#   - The Tailscale operator: a Helm release (README.md, steps 3-4).
+#     command line so no credential is ever in git (DEPLOY-K3S.md, B4).
+#   - The Tailscale operator: a Helm release (DEPLOY-K3S.md, A5-A6).
 #     review-api/lmstudio-egress.yaml only works once it runs.
 #   - job-test/: manual test Jobs. A finished Job cannot be updated, so a
-#     second "apply -k" would fail on them.
+#     second apply would fail on them.
 #
-# Later: this file is what CI edits (the newTag lines) and what ArgoCD applies.
+# Later: the newTag line is what CI (Jenkins) edits; Argo CD then deploys it.
 apiVersion: kustomize.config.k8s.io/v1beta1       # the Kustomize config format version
 kind: Kustomization                               # this file describes a set of manifests to apply together
 
@@ -35,15 +35,9 @@ resources:                                        # the files to apply (Kustomiz
   - review-api/rbac.yaml                          # review-api's ServiceAccount and permissions
   - review-api/lmstudio-egress.yaml               # the route to LM Studio through Tailscale
   - review-api/deployment.yaml                    # review-api Deployment and Service
-  # what the browser reaches
-  - ../ai-scanner-gateway-deployment             # the gateway repo: admins ConfigMap + Deployment and Service (reads the gateway-secrets Secret)
-  - ../ai-scanner-frontend-deployment            # the UI repo: the React UI, Deployment and Service
+  # what the browser reaches (the gateway and UI Services it routes to come from their own repositories)
   - ingress/ingress.yaml                          # Traefik routes: gateway paths to the gateway, everything else to the UI
 
 images:                                           # rewrite image references in the manifests above (NOT env vars like SCANNER_WORKER_IMAGE)
   - name: review-api                              # every "image: review-api" ...
-    newTag: 42495f9                               # ... becomes review-api:42495f9. Set it to the tag you BUILT from ai-scanner-backend (DEPLOY-K3S.md, B2)
-  - name: review-gateway                          # every "image: review-gateway" ...
-    newTag: 42495f9                               # ... becomes review-gateway:42495f9. The tag you built from ai-scanner-gateway
-  - name: review-frontend                         # every "image: review-frontend" ...
-    newTag: 42495f9                               # ... becomes review-frontend:42495f9. The tag you built from ai-scanner-frontend
+    newTag: e74fbb1                               # ... becomes review-api:e74fbb1. The tag you built from ai-scanner-backend and imported into K3s (DEPLOY-K3S.md, B1-B3)

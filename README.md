@@ -1,8 +1,9 @@
 # AI-Scan-Repos on Kubernetes
 
 Every manifest for the cluster lives in this repository and its two siblings
-(ai-scanner-gateway-deployment, ai-scanner-frontend-deployment, cloned next to
-it; `kustomization.yaml` pulls them in), and everything runs in
+(ai-scanner-gateway-deployment, ai-scanner-frontend-deployment). Each of the
+three is complete on its own, with its own `kustomization.yaml` and image
+tag, so Argo CD can deploy each as one Application. Everything runs in
 **one namespace, `ai-scan-repos`**. (Until 2026-09-30 there were two folders:
 `k8s/` in `ai-scan-repos` and `K8S-Tailcale-Egress/` in `code-review`. They
 were merged here. The scanner Jobs must mount the reports PVC, and a PVC can
@@ -21,7 +22,7 @@ browser ──▶ Ingress (Traefik) ──┬─▶ frontend (React UI, everythi
 
 | Path | What it is | Applied by |
 |---|---|---|
-| `kustomization.yaml` | the list of files below and the image tags | `kubectl apply -k` |
+| `kustomization.yaml` | the list of files below and the review-api image tag | `kubectl apply -k` / Argo CD |
 | `namespace.yaml` | the `ai-scan-repos` namespace, Pod Security `restricted` | `apply -k` |
 | `storage/storageclass-reports.yaml` | StorageClass `reports-noexec` (local-path) | `apply -k` |
 | `storage/pvc-reports.yaml` | PVC `ai-scan-repos-reports`, shared by review-api and every Job | `apply -k` |
@@ -29,8 +30,8 @@ browser ──▶ Ingress (Traefik) ──┬─▶ frontend (React UI, everythi
 | `review-api/rbac.yaml` | ServiceAccount + Role: create/delete Jobs and Secrets, read Job status | `apply -k` |
 | `review-api/lmstudio-egress.yaml` | Service `lmstudio`, the Tailscale route to LM Studio | `apply -k` |
 | `review-api/deployment.yaml` | review-api Deployment + Service, kubernetes mode | `apply -k` |
-| `../ai-scanner-gateway-deployment/` | gateway admins ConfigMap, Deployment + Service. **The public address is set here** (3 env vars) | `apply -k` |
-| `../ai-scanner-frontend-deployment/` | the React UI (nginx, uid 101) Deployment + Service | `apply -k` |
+| (repo ai-scanner-gateway-deployment) | gateway admins ConfigMap, Deployment + Service, review-gateway tag. **The public address is set here** (3 env vars) | its own `apply -k` / Argo CD |
+| (repo ai-scanner-frontend-deployment) | the React UI (nginx, uid 101) Deployment + Service, review-frontend tag | its own `apply -k` / Argo CD |
 | `ingress/ingress.yaml` | Traefik routes: the gateway's paths to the gateway, everything else to the UI | `apply -k` |
 | `tailscale-operator/values.yaml` | Helm values for the Tailscale operator | `helm` (step 4) |
 | `tailscale-operator/tailnet-policy.hujson` | the tailnet policy, as a record | the Tailscale admin console |
@@ -94,16 +95,15 @@ docker build -t "review-gateway:$GW_TAG" ai-scanner-gateway
 docker build -t "review-frontend:$FE_TAG" ai-scanner-frontend
 bash ai-scanner-backend/scanner-worker/build.sh --tag 0.5.0
 docker save "review-api:$API_TAG" "review-gateway:$GW_TAG" "review-frontend:$FE_TAG" scanner-worker:0.5.0 | sudo k3s ctr images import -
-cd ai-scanner-backend-deployment
-sed -i "/name: review-api /{n;s/newTag: [^ ]*/newTag: $API_TAG/}" kustomization.yaml
-sed -i "/name: review-gateway /{n;s/newTag: [^ ]*/newTag: $GW_TAG/}" kustomization.yaml
-sed -i "/name: review-frontend /{n;s/newTag: [^ ]*/newTag: $FE_TAG/}" kustomization.yaml
+sed -i "s/^    newTag: [^ ]*/    newTag: $API_TAG/" ai-scanner-backend-deployment/kustomization.yaml
+sed -i "s/^    newTag: [^ ]*/    newTag: $GW_TAG/"  ai-scanner-gateway-deployment/kustomization.yaml
+sed -i "s/^    newTag: [^ ]*/    newTag: $FE_TAG/"  ai-scanner-frontend-deployment/kustomization.yaml
 ```
 
 Docker and K3s keep separate image stores, hence the import. The `sed` lines
-point each `newTag` line at the commit of the repository that image was built
-from; commit that
-change. The scanner-worker tag is fixed (`0.5.0`) because review-api reads it
+point each deployment repository's `newTag` at the commit of the repository
+that image was built from; commit those changes (with Argo CD, the commit IS
+the deploy). The scanner-worker tag is fixed (`0.5.0`) because review-api reads it
 from the `SCANNER_WORKER_IMAGE` env var, which Kustomize does not rewrite.
 Bump it in `review-api/deployment.yaml` and in `job-test/` when you build a
 new worker.
@@ -177,8 +177,10 @@ needed). Details: DEPLOY-K3S.md, "AI model and admins".
 **6. The application**
 
 ```
-kubectl kustomize .
-kubectl apply -k .
+cd ~/Desktop/Final-Project-Repos
+kubectl apply -k ai-scanner-backend-deployment     # first: it creates the namespace
+kubectl apply -k ai-scanner-gateway-deployment
+kubectl apply -k ai-scanner-frontend-deployment
 kubectl -n ai-scan-repos rollout status statefulset/postgres
 kubectl -n ai-scan-repos rollout status deploy/review-api
 kubectl -n ai-scan-repos rollout status deploy/gateway
