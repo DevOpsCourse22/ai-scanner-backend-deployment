@@ -1,7 +1,16 @@
-# The WHOLE application, applied as one unit:
+# The WHOLE application, applied as one unit, from the root of this repository:
 #
-#   kubectl kustomize Code-Review-MCP/k8s     print exactly what would be applied (changes nothing)
-#   kubectl apply -k Code-Review-MCP/k8s      apply it (safe to repeat: unchanged objects stay as they are)
+#   kubectl kustomize .     print exactly what would be applied (changes nothing)
+#   kubectl apply -k .      apply it (safe to repeat: unchanged objects stay as they are)
+#
+# The gateway and the UI manifests live in their own repositories, which
+# must be cloned NEXT TO this one (same parent folder), because they are
+# listed below as ../ai-scanner-gateway-deployment and
+# ../ai-scanner-frontend-deployment:
+#
+#   <folder>/ai-scanner-backend-deployment     <- run kubectl here
+#   <folder>/ai-scanner-gateway-deployment
+#   <folder>/ai-scanner-frontend-deployment
 #
 # NOT in here, on purpose (each is once per cluster, see README.md):
 #   - The Secrets (postgres-credentials, gateway-secrets): created from the
@@ -27,15 +36,14 @@ resources:                                        # the files to apply (Kustomiz
   - review-api/lmstudio-egress.yaml               # the route to LM Studio through Tailscale
   - review-api/deployment.yaml                    # review-api Deployment and Service
   # what the browser reaches
-  - gateway/admins-configmap.yaml                 # who may change site-wide settings (edit with kubectl, no restart)
-  - gateway/deployment.yaml                       # gateway Deployment and Service (reads the gateway-secrets Secret)
-  - frontend/deployment.yaml                      # the React UI, Deployment and Service
+  - ../ai-scanner-gateway-deployment             # the gateway repo: admins ConfigMap + Deployment and Service (reads the gateway-secrets Secret)
+  - ../ai-scanner-frontend-deployment            # the UI repo: the React UI, Deployment and Service
   - ingress/ingress.yaml                          # Traefik routes: gateway paths to the gateway, everything else to the UI
 
 images:                                           # rewrite image references in the manifests above (NOT env vars like SCANNER_WORKER_IMAGE)
   - name: review-api                              # every "image: review-api" ...
-    newTag: 42495f9                               # ... becomes review-api:42495f9. Set it to the tag you BUILT (README.md, step 2)
+    newTag: 42495f9                               # ... becomes review-api:42495f9. Set it to the tag you BUILT from ai-scanner-backend (DEPLOY-K3S.md, B2)
   - name: review-gateway                          # every "image: review-gateway" ...
-    newTag: 42495f9                               # ... becomes review-gateway:42495f9. Same rule
+    newTag: 42495f9                               # ... becomes review-gateway:42495f9. The tag you built from ai-scanner-gateway
   - name: review-frontend                         # every "image: review-frontend" ...
-    newTag: 42495f9                               # ... becomes review-frontend:42495f9. Same rule
+    newTag: 42495f9                               # ... becomes review-frontend:42495f9. The tag you built from ai-scanner-frontend
