@@ -40,4 +40,5 @@ resources:                                        # the files to apply (Kustomiz
 
 images:                                           # rewrite image references in the manifests above (NOT env vars like SCANNER_WORKER_IMAGE)
   - name: review-api                              # every "image: review-api" ...
-    newTag: e74fbb1                               # ... becomes review-api:e74fbb1. The tag you built from ai-scanner-backend and imported into K3s (DEPLOY-K3S.md, B1-B3)
+    newName: 10.0.0.39:30500/review-api                    # set by Jenkins: the registry it was pushed to
+    newTag: a7c4712                               # set by Jenkins: the commit it was built from
