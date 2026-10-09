@@ -1,0 +1,71 @@
+# Brings GitHub's webhooks to Jenkins through smee.io.
+#
+# K3S-SRV is only on the tailnet, so github.com cannot call Jenkins. Instead:
+#   GitHub --POST--> https://smee.io/<channel>   (public relay)
+#   this Pod  <--holds an open connection to that channel, receives each event
+#   this Pod  --POST--> http://jenkins.jenkins.svc:8080/github-webhook/
+# Only outgoing connections: nothing on the server is exposed to the internet.
+#
+# The channel URL is the only "address" of the relay: anyone who knows it can
+# read the events (commit messages, branch names) and post fake ones. So it is
+# kept in a Secret, not in git, and the GitHub webhook uses a secret that
+# Jenkins checks (CI-PIPELINES.md, step 6). smee.io is a development relay;
+# on EKS the webhook goes straight to Jenkins's public load balancer instead.
+#
+#   kubectl -n jenkins create secret generic smee-channel --from-literal=url=<channel URL>
+#   kubectl apply -f platform/jenkins/smee-client.yaml
+apiVersion: apps/v1                               # apps API group, where Deployment is defined
+kind: Deployment                                  # keeps the relay client running (and restarts it if it dies)
+metadata:                                         # identity of the object
+  name: smee-client                               # Deployment name
+  namespace: jenkins                              # next to Jenkins, which it forwards to
+spec:                                             # desired state
+  replicas: 1                                     # exactly one: two clients would deliver every event twice
+  selector:                                       # how the Deployment finds its Pod
+    matchLabels:                                  # must match the template's labels
+      app: smee-client                            # the label set below
+  template:                                       # the Pod
+    metadata:                                     # the Pod's identity
+      labels:                                     # labels on the Pod
+        app: smee-client                          # matched by the selector above
+    spec:                                         # what runs in the Pod
+      securityContext:                            # for the whole Pod
+        runAsNonRoot: true                        # refuse to start as root
+        runAsUser: 1000                           # the image's "node" user
+        runAsGroup: 1000                          # its group
+        seccompProfile:                           # system-call filter
+          type: RuntimeDefault                    # the container runtime's default profile
+      containers:                                 # one container
+        - name: smee-client                       # container name
+          image: node:22-alpine                   # Node.js, to run the official smee-client package
+          command: ["sh", "-c"]                   # run through a shell, so $SMEE_URL is expanded
+          args:                                   # the command line
+            - >-
+              exec npx --yes smee-client@5.0.0
+              --url "$SMEE_URL"
+              --target http://jenkins.jenkins.svc.cluster.local:8080/github-webhook/
+          env:                                    # settings for the client
+            - name: SMEE_URL                      # the relay channel to listen on
+              valueFrom:                          # not written here ...
+                secretKeyRef:                     # ... read from a Secret
+                  name: smee-channel              # created from the command line (see the top of this file)
+                  key: url                        # the key holding the channel URL
+            - name: HOME                          # npm needs a writable home for its cache
+              value: /tmp                         # the writable emptyDir below
+          securityContext:                        # for this container
+            allowPrivilegeEscalation: false       # no setuid tricks
+            readOnlyRootFilesystem: true          # the image's files cannot be changed
+            capabilities:                         # Linux capabilities
+              drop: ["ALL"]                       # none needed
+          volumeMounts:                           # writable space
+            - name: tmp                           # the emptyDir below
+              mountPath: /tmp                     # npm downloads smee-client here at start
+          resources:                              # what it may use
+            requests:                             # reserved for it
+              cpu: 10m                            # it mostly waits
+              memory: 64Mi                        # a small Node process
+            limits:                               # the most it may use
+              memory: 256Mi                       # restarted above this
+      volumes:                                    # storage for the container
+        - name: tmp                               # used by the volumeMount
+          emptyDir: {}                            # deleted with the Pod

@@ -1,6 +1,8 @@
 # CI pipelines: Jenkins builds, Argo CD deploys
 
-Every push to `main` of a code repository runs its Jenkins pipeline. The
+Every push to `main` of a code repository runs its Jenkins pipeline.
+The images go to **our own registry on K3S-SRV** (Docker Registry), not to
+Docker Hub or any public registry; on EKS they go to private ECR repositories. The
 pipeline tests the code, builds the image, scans it, pushes it to the image
 registry and writes the new image tag into the matching deployment
 repository. Argo CD sees that commit and updates the cluster.
@@ -52,7 +54,7 @@ deleted when the build ends.
 | `platform/registry/registry.yaml` (this repo) | the local registry: Namespace, 50Gi volume, Deployment, NodePort 30500 |
 | `platform/registry/registries.yaml` (this repo) | tells K3s to pull from that registry over HTTP |
 | `platform/jenkins/values.yaml` (this repo) | Helm values for Jenkins |
-| `platform/jenkins/webhook-ingress.yaml` (this repo) | publishes ONLY `/github-webhook/` on the internet (Tailscale Funnel) |
+| `platform/jenkins/smee-client.yaml` (this repo) | the Pod that relays GitHub's webhooks from smee.io to Jenkins |
 
 `platform/` is not in `kustomization.yaml`: Argo CD does not manage it, you
 install it once.
@@ -145,25 +147,39 @@ git every 3 minutes.
 
 ### 6. The webhook: every push starts the pipeline
 
-GitHub is on the internet, K3S-SRV is not. Tailscale Funnel publishes only
-Jenkins's webhook path:
+GitHub is on the internet, K3S-SRV is not, so GitHub sends its webhooks to a
+public relay, **smee.io**, and a small Pod in the cluster (`smee-client`)
+picks them up and hands them to Jenkins. Only outgoing connections: nothing
+on the server is opened to the internet.
 
-1. 🌐 Tailscale admin console > **Access controls**: in `nodeAttrs`, add
-   `"tag:k8s"` to the Funnel rule's `target` (it lists only
-   `autogroup:member` today). Then **DNS** > **HTTPS Certificates** > Enable
-   (if it isn't). Copy the policy back into `tailscale-operator/tailnet-policy.hujson`.
-2. 🖥️ `kubectl apply -f ai-scanner-backend-deployment/platform/jenkins/webhook-ingress.yaml`
-   then `kubectl -n jenkins get ingress jenkins-github-webhook` until ADDRESS
-   shows `jenkins-webhook.tail3228b6.ts.net` (a minute or two).
-   ✅ From any machine, even off the tailnet:
-   `curl -s -o /dev/null -w '%{http_code}\n' https://jenkins-webhook.tail3228b6.ts.net/github-webhook/`
-   prints `405` or `200` (Jenkins answering a GET), and
-   `https://jenkins-webhook.tail3228b6.ts.net/login` prints `404` (the UI is NOT exposed).
-3. 🌐 GitHub > **DevOpsCourse22** organization > Settings > **Webhooks** > Add
-   webhook (one webhook for all repos):
-   Payload URL `https://jenkins-webhook.tail3228b6.ts.net/github-webhook/`,
-   Content type `application/json`, events **Pushes** and **Pull requests**.
-   ✅ "Recent Deliveries" shows a green ✓ for the ping.
+1. 🌐 Open **https://smee.io/new**. It creates a channel and shows its URL,
+   `https://smee.io/<random>`. Treat that URL like a password: anyone who has
+   it can read the events and send fake ones. Don't put it in git or a chat.
+2. 🖥️ Store it in the cluster (hidden prompt) and start the client:
+
+   ```bash
+   read -rsp "smee.io channel URL: " SMEE_URL; echo
+   kubectl -n jenkins create secret generic smee-channel --from-literal=url="$SMEE_URL"; unset SMEE_URL
+   kubectl apply -f ai-scanner-backend-deployment/platform/jenkins/smee-client.yaml
+   kubectl -n jenkins logs deploy/smee-client --tail=5
+   ```
+
+   ✅ The log says `Forwarding https://smee.io/... to http://jenkins.jenkins.svc.cluster.local:8080/github-webhook/`
+   and `Connected https://smee.io/...`.
+3. A webhook secret, so Jenkins only accepts events really signed by GitHub
+   (this is what makes a leaked channel URL harmless for triggering builds):
+   - 🖥️ make one, without showing it: `openssl rand -hex 32 > ~/webhook-secret && chmod 600 ~/webhook-secret`
+     (you paste it into the two forms below with `cat ~/webhook-secret`, then delete the file).
+   - Jenkins: Manage Jenkins > Credentials > Global > Add: Kind **Secret
+     text**, ID `github-webhook-secret`, Secret = the value. Then Manage
+     Jenkins > System > **GitHub** > Advanced > **Shared secrets** > Add >
+     `github-webhook-secret` > Save.
+4. 🌐 GitHub > **DevOpsCourse22** organization > Settings > **Webhooks** > Add
+   webhook (one webhook for all repos): Payload URL = the smee channel URL,
+   Content type `application/json`, Secret = the same value, events
+   **Pushes** and **Pull requests**. Then `rm ~/webhook-secret` on the server.
+   ✅ GitHub's "Recent Deliveries" shows a green ✓ for the ping; the smee
+   client log shows `POST http://jenkins.../github-webhook/ - 200`.
 
 ## Demonstration
 
@@ -187,6 +203,9 @@ Jenkins's webhook path:
   those repositories. The Jenkinsfiles need no change.
 - The registry and `registries.yaml` are not needed there; EKS nodes pull
   from ECR with their node role.
+- The smee relay is not needed there either: Jenkins gets a public address
+  (load balancer), and the GitHub webhook points straight at
+  `https://<jenkins address>/github-webhook/`.
 
 ## Notes
 
