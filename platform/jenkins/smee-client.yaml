@@ -39,11 +39,17 @@ spec:                                             # desired state
         - name: smee-client                       # container name
           image: node:22-alpine                   # Node.js, to run the official smee-client package
           command: ["sh", "-c"]                   # run through a shell, so $SMEE_URL is expanded
+          # The "?" at the end of --target is on purpose. smee-client 5 strips a
+          # trailing "/" from the target, so it would POST to /github-webhook;
+          # Jenkins answers that with a redirect to /github-webhook/, the client
+          # follows it as a GET, and Jenkins rejects the GET: "405 Method POST
+          # required". With "?" the URL no longer ends in "/", nothing is stripped,
+          # and the empty query string is dropped before sending.
           args:                                   # the command line
             - >-
               exec npx --yes smee-client@5.0.0
               --url "$SMEE_URL"
-              --target http://jenkins.jenkins.svc.cluster.local:8080/github-webhook/
+              --target "http://jenkins.jenkins.svc.cluster.local:8080/github-webhook/?"
           env:                                    # settings for the client
             - name: SMEE_URL                      # the relay channel to listen on
               valueFrom:                          # not written here ...
