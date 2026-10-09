@@ -109,31 +109,143 @@ and log in as `admin` (password, read in your terminal only:
 
 ### 3. Two GitHub tokens, stored in Jenkins
 
-Fine-grained tokens (github.com/settings/personal-access-tokens/new),
-**Resource owner: DevOpsCourse22**:
+**Why two, and not one per repository?** One fine-grained token can cover
+several repositories (you tick them when you create it). The split is by
+**permission**, so each token can do only what its job needs:
 
-| Jenkins credential ID | Repositories | Permissions | Used for |
+| Jenkins credential ID | Repositories | Can do | Used by |
 |---|---|---|---|
-| `github-ci` | the 3 code repos (`ai-scanner-backend`, `-gateway`, `-frontend`) | Contents: **Read-only**, Commit statuses: **Read and write** | Jenkins reads the code and shows ✓/✗ on commits |
-| `github-deploy` | the 3 `*-deployment` repos | Contents: **Read and write** | the Deploy stage pushes the new tag |
+| `github-ci` | the 3 code repos (`ai-scanner-backend`, `-gateway`, `-frontend`) | read the code; set the ✓/✗ build status on commits | Jenkins, to fetch the code and run the pipelines |
+| `github-deploy` | the 3 `*-deployment` repos | push commits | the Deploy stage, to commit the new image tag |
 
-In Jenkins: Manage Jenkins > Credentials > System > Global credentials >
-**Add Credentials** > Kind **Username with password**: Username `Elad-Eytan`,
-Password = the token, ID exactly as in the table. (Typed into Jenkins's own
-form, so the token never touches a file or a chat.)
+The token Jenkins uses all the time cannot change anything; the one that can
+push never reaches the source code.
+
+**A. Create `github-ci`** (🌐 github.com, as Elad-Eytan):
+https://github.com/settings/personal-access-tokens/new
+
+- Token name `jenkins-ci-read`; Resource owner **DevOpsCourse22**;
+  Expiration at least a month after the course (e.g. 2026-12-31).
+- Repository access: **Only select repositories** > the 3 code repos.
+- Repository permissions: **Contents: Read-only**, **Commit statuses: Read
+  and write** (Metadata: Read-only is added by itself). Everything else: No access.
+- **Generate token**, copy it (`github_pat_...`, shown once) straight into Jenkins (C).
+
+**B. Create `github-deploy`**: the same form, token name `jenkins-deploy-write`,
+the 3 `*-deployment` repos, **Contents: Read and write** only.
+
+If a token shows **Pending**: DevOpsCourse22 > Settings > Personal access
+tokens > Pending requests > approve (you are an owner).
+
+**C. Store them in Jenkins**: Manage Jenkins > Credentials > **(global)** >
+Add Credentials, twice:
+
+| Field | First | Second |
+|---|---|---|
+| Kind | Username with password | Username with password |
+| Scope | Global | Global |
+| Username | `Elad-Eytan` | `Elad-Eytan` |
+| Password | token A | token B |
+| ID | `github-ci` | `github-deploy` |
+| Description | GitHub read: code repos | GitHub write: deployment repos |
+
+✅ The Credentials page lists both, passwords shown as `****`.
+
+**D. Optional check** (🖥️ K3s server; the token is read at a hidden prompt
+and never printed). GitHub answers what the token may do per repository:
+
+```bash
+read -rsp "Token: " T; echo; for r in ai-scanner-backend ai-scanner-gateway ai-scanner-frontend ai-scanner-backend-deployment ai-scanner-gateway-deployment ai-scanner-frontend-deployment; do printf '%-32s ' $r; curl -s -H "Authorization: Bearer $T" https://api.github.com/repos/DevOpsCourse22/$r | python3 -c "import json,sys; d=json.load(sys.stdin); p=d.get('permissions'); print('no access' if not p else ('WRITE' if p['push'] else 'read'))"; done; unset T
+```
+
+✅ `github-ci`: `read` on the 3 code repos, `no access` on the others.
+`github-deploy`: `WRITE` on the 3 deployment repos, `no access` on the others.
 
 ### 4. The three jobs
 
-For each code repo: Jenkins > **New Item** > name `ai-scanner-backend` (then
-`ai-scanner-gateway`, `ai-scanner-frontend`) > **Multibranch Pipeline** > OK.
-Under **Branch Sources** > Add source > **GitHub**:
-Credentials `github-ci`, Repository HTTPS URL
-`https://github.com/DevOpsCourse22/<repo>.git`, **Validate** (✅ "Credentials
-ok"). Build Configuration: by Jenkinsfile. **Save**.
+**What a job is.** A Jenkins *job* is "a thing Jenkins can build". You make
+one per code repository, of the type **Multibranch Pipeline**:
 
-✅ Jenkins scans the repo, finds `main`, and starts a first build. Watch it:
-Test, Build, Scan, Push, Deploy turn green one by one. After the Push stage:
-`curl -s http://10.0.0.39:30500/v2/_catalog` lists the image.
+- It watches **one GitHub repository** (using the `github-ci` token).
+- It looks at every branch (and pull request) and, for each one that has a
+  `Jenkinsfile`, creates a sub-job for that branch automatically. So you
+  never create "the main job" by hand: you get `ai-scanner-frontend » main`,
+  and a branch `feature-x` you push later appears by itself.
+- The **Jenkinsfile in the repository** is the pipeline. The job only says
+  *where* the code is; *what* to do (Test, Build, Scan, Push, Deploy) comes
+  from the file, so changes to the pipeline are reviewed and versioned like
+  code.
+- Each build runs in a fresh Pod in the `jenkins` namespace, made from the
+  repo's `ci/pod.yaml`, deleted afterwards.
+
+Push and Deploy run only for `main` (the Jenkinsfile says `when { branch 'main' }`);
+other branches and pull requests are tested, built and scanned only.
+
+**Create the first job** (🌐 `http://jenkins.100-111-216-122.sslip.io`, as admin):
+
+1. Dashboard > **New Item**.
+2. Name: `ai-scanner-backend` (the repository's name keeps things clear).
+   Choose **Multibranch Pipeline** > **OK**.
+3. **General**: Display Name empty (the name is enough); Description
+   e.g. "review-api + scanner-worker: test, build, scan, push, deploy".
+4. **Branch Sources** > **Add source** > **GitHub**:
+   - **Credentials**: `Elad-Eytan/****** (GitHub read: code repos)`, i.e. `github-ci`.
+     (Never `github-deploy` here: reading code needs only the read token.)
+   - **Repository HTTPS URL**: `https://github.com/DevOpsCourse22/ai-scanner-backend.git`
+   - Click **Validate**. ✅ "Credentials ok. Connected to https://github.com/DevOpsCourse22/ai-scanner-backend."
+     If it says the repository was not found: the token does not include
+     that repository, or it is still Pending.
+   - **Behaviours**: the defaults are right, with one change: **delete
+     "Discover pull requests from forks"** (the red X). A fork's pull
+     request would run someone else's code with our credentials. The two
+     that stay: "Discover branches" and "Discover pull requests from origin".
+5. **Build Configuration**: Mode **by Jenkinsfile**, Script Path `Jenkinsfile`
+   (the defaults).
+6. **Scan Repository Triggers**: tick **Periodically if not otherwise run**,
+   Interval **1 day**. The webhook (step 6) is what starts builds right away;
+   this daily scan only catches anything a missed webhook skipped.
+7. **Orphaned Item Strategy**: tick **Discard old items** (a deleted branch's
+   sub-job is removed). Leave the numbers empty.
+8. **Save**.
+
+**What happens when you click Save.** Jenkins runs a **Scan Repository**:
+it lists the branches, finds `Jenkinsfile` on `main`, creates the sub-job
+`main` and starts build #1 at once. Follow it: click `main` > `#1` >
+**Pipeline Overview** (the stage graph) or **Console Output** (the full log).
+
+The first build is slow (5-15 minutes): the Pod pulls its images (python,
+buildkit, trivy, aws-cli, git), BuildKit starts with an empty cache, and the
+backend installs its test dependencies. Later builds are faster.
+
+✅ When it is done:
+- All five stages are green: Test, Build, Scan, Push, Deploy.
+- Build #1 page > **Tests**: the number of tests passed.
+- Build #1 page > **Build Artifacts**: `trivy-review-api.txt`,
+  `trivy-scanner-worker.txt` (the scan reports).
+- 🖥️ `curl -s http://10.0.0.39:30500/v2/_catalog` lists `review-api` and
+  `scanner-worker`, and `curl -s http://10.0.0.39:30500/v2/review-api/tags/list`
+  shows the commit as the tag.
+- On GitHub, `ai-scanner-backend-deployment` has a new commit
+  `ci(deploy): review-api and scanner-worker -> <tag>` by "Jenkins CI".
+- The commit on `ai-scanner-backend` shows a green ✓ (the build status).
+
+Until step 5 turns on automatic sync, Argo CD shows `ai-scan-backend` as
+**OutOfSync** after that commit: it noticed, and waits for you.
+
+**Repeat** for the other two, changing only the name, the description and
+the URL:
+
+| Job name | Repository HTTPS URL |
+|---|---|
+| `ai-scanner-gateway` | `https://github.com/DevOpsCourse22/ai-scanner-gateway.git` |
+| `ai-scanner-frontend` | `https://github.com/DevOpsCourse22/ai-scanner-frontend.git` |
+
+**If a build fails**: the stage that turned red is where to look. Its log
+(click the stage) shows the last command and its error. Common first-run
+causes: a test failure (Test), BuildKit not allowed to start (Build: the
+log says `permission denied` or `operation not permitted`), the registry not
+reachable (Push), a wrong or Pending `github-deploy` token (Deploy:
+`Authentication failed`). Send the last 30 lines of the red stage's log.
 
 ### 5. Argo CD: deploy automatically
 
