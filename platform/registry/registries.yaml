@@ -1,0 +1,14 @@
+# Tells K3s (its containerd) how to pull from the local registry.
+# Copy to /etc/rancher/k3s/registries.yaml on K3S-SRV, then restart K3s:
+#
+#   sudo cp platform/registry/registries.yaml /etc/rancher/k3s/registries.yaml
+#   sudo systemctl restart k3s
+#
+# Without it, K3s tries HTTPS for 10.0.0.39:30500 and every Pod using a
+# pushed image fails with ImagePullBackOff ("http: server gave HTTP response
+# to HTTPS client"). Restarting K3s does not stop running Pods for long; they
+# keep running while the K3s process restarts.
+mirrors:                                          # registries containerd should reach in a non-default way
+  "10.0.0.39:30500":                              # the image name prefix Jenkins pushes to (registry.yaml, NodePort 30500)
+    endpoint:                                     # where to actually connect for that prefix
+      - "http://10.0.0.39:30500"                  # plain HTTP (private network only, no TLS certificate)

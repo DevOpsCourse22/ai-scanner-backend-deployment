@@ -1,0 +1,47 @@
+# Helm values for Jenkins (chart jenkins/jenkins 5.9.68, Jenkins 2.580.1).
+# Only what differs from the chart's defaults. Install / upgrade:
+#
+#   helm repo add jenkins https://charts.jenkins.io && helm repo update
+#   helm upgrade --install jenkins jenkins/jenkins -n jenkins --version 5.9.68 \
+#     -f platform/jenkins/values.yaml --wait --timeout 10m
+#
+# Needs first (CI-PIPELINES.md, step 2): the namespace "jenkins" and the
+# Secret "jenkins-admin" (keys jenkins-admin-user, jenkins-admin-password).
+# NOT part of kustomization.yaml: platform, installed once by hand.
+
+controller:                                       # the Jenkins server itself
+  admin:                                          # the first admin user
+    existingSecret: jenkins-admin                 # its user name and password come from this Secret (created from the command line)
+    # Leave createSecret at its default (true). Despite the name, with
+    # existingSecret set the chart creates no Secret; "true" is what makes it
+    # MOUNT the admin Secret. Set to false, Jenkins starts with no admin password.
+  jenkinsUrl: http://jenkins.100-111-216-122.sslip.io  # the address Jenkins puts in its own links and build URLs
+
+  ingress:                                        # the web UI, for people on the tailnet
+    enabled: true                                 # create an Ingress
+    ingressClassName: traefik                     # through K3s's Traefik, like Grafana and Argo CD
+    hostName: jenkins.100-111-216-122.sslip.io    # resolves to the server's tailnet IP
+
+  additionalPlugins:                              # on top of the chart's defaults (kubernetes, workflow-aggregator, git, configuration-as-code)
+    - github-branch-source                        # Multibranch Pipeline jobs that read GitHub repositories, and the /github-webhook/ endpoint
+    - junit                                       # shows test results (the Test stages publish JUnit XML)
+    - pipeline-graph-view                         # a clear graph of each run's stages
+
+  JCasC:                                          # Jenkins configuration as code (applied on every start)
+    configScripts:                                # one block per topic
+      ci-registry: |                              # where the pipelines push images (read by every Jenkinsfile)
+        jenkins:
+          globalNodeProperties:
+            - envVars:
+                env:
+                  - key: REGISTRY_KIND
+                    value: "local"
+                  - key: REGISTRY
+                    value: "10.0.0.39:30500"
+        # For ECR (EKS), change these two and add:
+        #   - key: AWS_REGION          value: "<region>"
+        #   - key: AWS_CREDENTIALS_ID  value: "aws-ecr"   (only outside AWS; on EKS leave it out and use IRSA)
+
+persistence:                                      # Jenkins's home folder: jobs, build history, plugins
+  storageClass: local-path                        # K3s's built-in provisioner
+  size: 20Gi                                      # build history and logs (the chart default, 8Gi, fills up quickly)

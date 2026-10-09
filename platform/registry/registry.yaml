@@ -1,0 +1,90 @@
+# The local image registry for K3S-SRV: where Jenkins pushes the images it
+# builds and where K3s pulls them from. The official Docker Registry
+# ("distribution"), one Pod with a volume, no web UI.
+#
+# NOT part of kustomization.yaml (Argo CD does not manage it): it is platform,
+# installed once per cluster by hand:
+#
+#   kubectl apply -f platform/registry/registry.yaml
+#
+# Reached at 10.0.0.39:30500 (the node's address, NodePort below) by BOTH
+# Jenkins (push) and K3s itself (pull), so an image has the same name
+# everywhere. Plain HTTP on the private network: K3s must be told to trust it
+# (platform/registry/registries.yaml, copied to /etc/rancher/k3s/).
+# On EKS this whole file is replaced by ECR.
+---
+apiVersion: v1                                    # core API group, where Namespace is defined
+kind: Namespace                                   # the registry gets its own namespace
+metadata:                                         # identity of the object
+  name: registry                                  # namespace name
+---
+apiVersion: v1                                    # core API group, where PersistentVolumeClaim is defined
+kind: PersistentVolumeClaim                       # the disk the images are stored on
+metadata:                                         # identity of the object
+  name: registry-data                             # claim name, mounted by the Deployment below
+  namespace: registry                             # same namespace as the Pod that mounts it
+spec:                                             # what storage is requested
+  storageClassName: local-path                    # K3s's built-in provisioner: a folder on the node's disk
+  accessModes: [ReadWriteOnce]                    # one node mounts it (there is one node)
+  resources:                                      # how much
+    requests:                                     # the size asked for
+      storage: 50Gi                               # room for many image versions (the disk has 1.6 TB free)
+---
+apiVersion: apps/v1                               # apps API group, where Deployment is defined
+kind: Deployment                                  # keeps the registry Pod running
+metadata:                                         # identity of the object
+  name: registry                                  # Deployment name
+  namespace: registry                             # its namespace
+spec:                                             # desired state
+  replicas: 1                                     # one copy: two would fight over the ReadWriteOnce volume
+  strategy:                                       # how a change replaces the Pod
+    type: Recreate                                # stop the old Pod before starting the new one (same volume)
+  selector:                                       # how the Deployment finds its Pod
+    matchLabels:                                  # must match the template's labels
+      app: registry                               # the label set below
+  template:                                       # the Pod
+    metadata:                                     # the Pod's identity
+      labels:                                     # labels on the Pod
+        app: registry                             # matched by the selector above and the Service below
+    spec:                                         # what runs in the Pod
+      containers:                                 # one container
+        - name: registry                          # container name
+          image: registry:2.8.3                   # the official Docker Registry, pinned
+          ports:                                  # ports it listens on
+            - name: http                          # named, so the Service and probes refer to it by name
+              containerPort: 5000                 # the registry API
+          env:                                    # registry settings
+            - name: REGISTRY_STORAGE_DELETE_ENABLED  # allow deleting images through the API
+              value: "true"                       # so old tags can be cleaned up later
+          volumeMounts:                           # where the volume appears
+            - name: data                          # the volume defined below
+              mountPath: /var/lib/registry        # where the registry stores image layers
+          readinessProbe:                         # ready = answering the API
+            httpGet:                              # an HTTP GET ...
+              path: /v2/                          # ... on the API root (answers 200)
+              port: http                          # ... on the named port
+          resources:                              # what it may use
+            requests:                             # reserved for it
+              cpu: 50m                            # a twentieth of a core
+              memory: 64Mi                        # the registry is small
+            limits:                               # the most it may use
+              memory: 512Mi                       # killed and restarted above this
+      volumes:                                    # storage for the containers above
+        - name: data                              # used by the volumeMount
+          persistentVolumeClaim:                  # from a PVC ...
+            claimName: registry-data              # ... the one defined above
+---
+apiVersion: v1                                    # core API group, where Service is defined
+kind: Service                                     # a stable address for the registry
+metadata:                                         # identity of the object
+  name: registry                                  # Service name (inside the cluster: registry.registry.svc)
+  namespace: registry                             # its namespace
+spec:                                             # how it is reached
+  type: NodePort                                  # also open a port on the node itself, so K3s (containerd) can pull from it
+  selector:                                       # which Pods receive the traffic
+    app: registry                                 # the registry Pod
+  ports:                                          # the ports exposed
+    - name: http                                  # port name
+      port: 5000                                  # inside the cluster
+      targetPort: http                            # the container's named port
+      nodePort: 30500                             # on the node: 10.0.0.39:30500 (and 100.111.216.122:30500 on the tailnet)
