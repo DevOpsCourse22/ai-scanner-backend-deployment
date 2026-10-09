@@ -259,39 +259,59 @@ git every 3 minutes.
 
 ### 6. The webhook: every push starts the pipeline
 
-GitHub is on the internet, K3S-SRV is not, so GitHub sends its webhooks to a
-public relay, **smee.io**, and a small Pod in the cluster (`smee-client`)
-picks them up and hands them to Jenkins. Only outgoing connections: nothing
-on the server is opened to the internet.
+**Why.** Without it Jenkins does not know you pushed: it builds only when
+you click Build Now or at its daily scan. A webhook is GitHub calling Jenkins
+the moment you push. GitHub is on the internet and Jenkins only on the
+tailnet, so the call goes through smee.io, a free relay:
 
-1. 🌐 Open **https://smee.io/new**. It creates a channel and shows its URL,
-   `https://smee.io/<random>`. Treat that URL like a password: anyone who has
-   it can read the events and send fake ones. Don't put it in git or a chat.
-2. 🖥️ Store it in the cluster (hidden prompt) and start the client:
+```
+git push -> GitHub --POST--> smee.io channel <--open connection-- smee-client Pod --POST--> Jenkins /github-webhook/
+```
 
-   ```bash
-   read -rsp "smee.io channel URL: " SMEE_URL; echo
-   kubectl -n jenkins create secret generic smee-channel --from-literal=url="$SMEE_URL"; unset SMEE_URL
-   kubectl apply -f ai-scanner-backend-deployment/platform/jenkins/smee-client.yaml
-   kubectl -n jenkins logs deploy/smee-client --tail=5
-   ```
+The Pod only connects out: nothing on the server is opened to the internet.
 
-   ✅ The log says `Forwarding https://smee.io/... to http://jenkins.jenkins.svc.cluster.local:8080/github-webhook/`
-   and `Connected https://smee.io/...`.
-3. A webhook secret, so Jenkins only accepts events really signed by GitHub
-   (this is what makes a leaked channel URL harmless for triggering builds):
-   - 🖥️ make one, without showing it: `openssl rand -hex 32 > ~/webhook-secret && chmod 600 ~/webhook-secret`
-     (you paste it into the two forms below with `cat ~/webhook-secret`, then delete the file).
-   - Jenkins: Manage Jenkins > Credentials > Global > Add: Kind **Secret
-     text**, ID `github-webhook-secret`, Secret = the value. Then Manage
-     Jenkins > System > **GitHub** > Advanced > **Shared secrets** > Add >
-     `github-webhook-secret` > Save.
-4. 🌐 GitHub > **DevOpsCourse22** organization > Settings > **Webhooks** > Add
-   webhook (one webhook for all repos): Payload URL = the smee channel URL,
-   Content type `application/json`, Secret = the same value, events
-   **Pushes** and **Pull requests**. Then `rm ~/webhook-secret` on the server.
-   ✅ GitHub's "Recent Deliveries" shows a green ✓ for the ping; the smee
-   client log shows `POST http://jenkins.../github-webhook/ - 200`.
+**6.1 A channel.** 🌐 Open https://smee.io/new . The page redirects to a new
+address, `https://smee.io/` + about 16 random characters: that address in the
+browser's address bar is your channel. (Not the text `smee.io/new` itself.)
+Keep the page open: it shows each event live. Treat the URL like a password.
+
+**6.2 Store it and start the client** (🖥️ the URL is read at a hidden prompt):
+
+```bash
+read -rsp "smee.io channel URL: " SMEE_URL; echo
+kubectl -n jenkins create secret generic smee-channel --from-literal=url="$SMEE_URL"; unset SMEE_URL
+kubectl apply -f ai-scanner-backend-deployment/platform/jenkins/smee-client.yaml
+kubectl -n jenkins logs deploy/smee-client --tail=3
+```
+
+✅ `Connected to https://smee.io/<your channel>`. To replace a wrong URL:
+`kubectl -n jenkins delete secret smee-channel`, create it again, then
+`kubectl -n jenkins rollout restart deploy/smee-client` (the Pod reads the
+Secret only when it starts).
+
+**6.3 A webhook secret**, so Jenkins accepts only events GitHub really
+signed (a leaked channel URL then cannot start builds):
+
+```bash
+openssl rand -hex 32 > ~/webhook-secret && chmod 600 ~/webhook-secret
+cat ~/webhook-secret     # only when pasting it into the two forms below
+```
+
+- Jenkins: Manage Jenkins > Credentials > (global) > Add Credentials: Kind
+  Secret text, Secret = the value, ID `github-webhook-secret`.
+- Jenkins: Manage Jenkins > System > GitHub > Advanced > Shared secrets >
+  Add > `github-webhook-secret` > Save.
+
+**6.4 The GitHub webhook.** 🌐 github.com/DevOpsCourse22 > Settings (the
+organization's) > Webhooks > Add webhook: Payload URL = the channel URL,
+Content type `application/json`, Secret = the same value, SSL verification
+enabled, events: "Let me select individual events" > Pushes and Pull
+requests only, Active. One organization webhook covers every repository.
+Then `rm ~/webhook-secret`.
+
+**6.5 Check.** GitHub > the webhook > Recent Deliveries: the ping has a green
+✓; the smee.io page shows it; `kubectl -n jenkins logs deploy/smee-client --tail=3`
+shows `POST http://jenkins.jenkins.svc.cluster.local:8080/github-webhook/ - 200`.
 
 ## Demonstration
 
