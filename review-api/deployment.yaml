@@ -46,7 +46,7 @@ spec:                                             # desired state
             - name: REVIEW_K8S_NAMESPACE          # where to create the Jobs
               value: ai-scan-repos                # this namespace: the Jobs must be here to mount the reports PVC
             - name: SCANNER_WORKER_IMAGE          # the image each Job runs (an env var, so kustomize does NOT rewrite it)
-              value: 10.0.0.39:30500/scanner-worker:1555cb1         # a FIXED tag: with :latest Kubernetes always tries to pull, and there is no registry. 0.5.0 = contract v4 (LLM_API_KEY from the per-review Secret, scanner results reused on resume); build and import it first
+              value: 10.0.0.39:30500/scanner-worker:59c4c56         # a FIXED tag: with :latest Kubernetes always tries to pull, and there is no registry. 0.5.0 = contract v4 (LLM_API_KEY from the per-review Secret, scanner results reused on resume); build and import it first
             - name: REVIEW_REPORTS_PVC            # the PVC each Job mounts at /reports
               value: ai-scan-repos-reports        # the PVC in storage/pvc-reports.yaml
             - name: LMSTUDIO_BASE_URL             # the model endpoint; review-api also passes it to every Job

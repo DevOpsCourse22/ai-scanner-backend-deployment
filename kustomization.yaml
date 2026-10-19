@@ -41,4 +41,4 @@ resources:                                        # the files to apply (Kustomiz
 images:                                           # rewrite image references in the manifests above (NOT env vars like SCANNER_WORKER_IMAGE)
   - name: review-api                              # every "image: review-api" ...
     newName: 10.0.0.39:30500/review-api                    # set by Jenkins: the registry it was pushed to
-    newTag: 1555cb1                               # set by Jenkins: the commit it was built from
+    newTag: 59c4c56                               # set by Jenkins: the commit it was built from
